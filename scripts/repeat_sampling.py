@@ -72,6 +72,8 @@ class RepeatSamplingScript(scripts.Script):
             with SanityCount(self.sum_step, init=p.steps) as sc:
                 img2img_sampler_name = p.sampler_name if global_state.sampler_name == "Use same sampler" else global_state.sampler_name
                 for i in range(global_state.repeats):
+                    if state.interrupted or state.skipped:
+                        break
                     # GC now before running the next img2img to prevent running out of memory
                     p.sampler = sd_samplers.create_sampler(img2img_sampler_name, p.sd_model)
                     devices.torch_gc()
