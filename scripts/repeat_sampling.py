@@ -108,6 +108,8 @@ class RepeatSamplingScript(scripts.Script):
 
                 p.sampler = None
                 devices.torch_gc()
+                p.steps = self.start_step  # reset steps to service potential batch
+                p.denoising_strength = global_state.repeat_denoise_strength  # reset noise to service potential batch
 
     def update_global_state(self, args: Dict):
         if shared.state.job_no == 0:
