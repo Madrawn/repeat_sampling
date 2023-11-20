@@ -1,0 +1,438 @@
+### scripts\repeat_sampling.py ###
+
+from lib_repeat_sampling import global_state, ui, xyz_grid
+from modules import scripts, processing, shared
+from typing import Dict
+
+import modules.scripts
+from modules.shared import opts
+import math
+
+import torch
+
+import modules.sd_hijack
+from modules import (
+    devices,
+    sd_samplers,
+    extra_networks,
+    rng,
+)
+from modules.sd_samplers_common import images_tensor_to_samples, approximation_indexes, setup_img2img_steps
+import modules.face_restoration
+import modules.styles
+import modules.sd_models as sd_models
+
+
+class RepeatSamplingScript(scripts.Script):
+    def __init__(self):
+        self.accordion_interface = None
+        self._is_img2img = False
+
+    @property
+    def is_img2img(self):
+        return self._is_img2img
+
+    @is_img2img.setter
+    def is_img2img(self, is_img2img):
+        self._is_img2img = is_img2img
+        if self.accordion_interface is None:
+            self.accordion_interface = ui.AccordionInterface(self.elem_id)
+
+    def title(self) -> str:
+        return "Repeat Sampling"
+
+    def show(self, is_img2img: bool):
+        return scripts.AlwaysVisible
+
+    def ui(self, is_img2img: bool):
+        self.accordion_interface.arrange_components(is_img2img)
+        self.accordion_interface.connect_events(is_img2img)
+        self.infotext_fields = self.accordion_interface.get_infotext_fields()
+        self.paste_field_names = self.accordion_interface.get_paste_field_names()
+        self.accordion_interface.set_rendered()
+        return self.accordion_interface.get_components()
+
+    def process(self, p: processing.StableDiffusionProcessing, *args):
+        args = self.accordion_interface.unpack_processing_args(*args)
+        self.update_global_state(args)
+        global_state.factor = 1 if global_state.tactic == "Equal" else global_state.factor
+        if global_state.checkbox:
+            self.sum_step = p.steps
+            p.steps = math.ceil(
+                (
+                    p.steps / (1 + global_state.repeat_denoise_strength * (1 - global_state.factor**global_state.repeats) / (1 - global_state.factor))
+                    if global_state.factor != 1
+                    else p.steps / (1 + global_state.repeat_denoise_strength * global_state.repeats)
+                )
+            )
+            p.denoising_strength = global_state.repeat_denoise_strength
+            p.extra_generation_params.update(self.accordion_interface.get_extra_generation_params(args))
+
+    def postprocess_batch_list(self, p: processing.StableDiffusionProcessing, pp: modules.scripts.PostprocessBatchListArgs, *script_args, **kwargs):
+        # global_state.apply_and_clear_repeat_override()
+        if global_state.checkbox:
+            with SanityCount(self.sum_step, init=p.steps) as sc:
+                img2img_sampler_name = p.sampler_name if global_state.sampler_name == "Use same sampler" else global_state.sampler_name
+                for i in range(global_state.repeats):
+                    # GC now before running the next img2img to prevent running out of memory
+                    p.sampler = sd_samplers.create_sampler(img2img_sampler_name, p.sd_model)
+                    devices.torch_gc()
+
+                    with devices.autocast():
+                        extra_networks.activate(p, p.extra_network_data)
+                    sd_models.apply_token_merging(p.sd_model, p.get_token_merging_ratio())
+                    images = torch.stack(pp.images).to(device=shared.device, dtype=devices.dtype_vae)
+                    samples = images_tensor_to_samples(images, approximation_indexes.get(opts.sd_vae_encode_method))
+                    if global_state.fixed_seed != "False":
+                        p.rng = rng.ImageRNG(samples.shape[1:], p.seeds, subseeds=p.subseeds, subseed_strength=p.subseed_strength)
+                        if global_state.fixed_seed != "Same":
+                            p.rng.next()
+
+                    noise = p.rng.next()
+
+                    image_conditioning = p.txt2img_image_conditioning(images)
+                    sd_models.apply_token_merging(p.sd_model, p.get_token_merging_ratio())
+                    _, x = setup_img2img_steps(p)
+                    sc(x, p.denoising_strength)
+                    samples_ddim = p.sampler.sample_img2img(
+                        p, samples, noise, p.c, p.uc, steps=None if p.steps * p.denoising_strength > 3 else 3, image_conditioning=image_conditioning
+                    )
+                    if global_state.tactic != "Equal":
+                        _, p.steps = setup_img2img_steps(p)
+                        p.denoising_strength *= global_state.factor
+
+                    x_samples_ddim = processing.decode_latent_batch(p.sd_model, samples_ddim, target_device=devices.cpu, check_for_nans=True)
+                    x_samples_ddim = torch.stack(x_samples_ddim).float()
+                    x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
+                    pp.images = list(x_samples_ddim)
+
+                p.sampler = None
+                devices.torch_gc()
+
+    def update_global_state(self, args: Dict):
+        if shared.state.job_no == 0:
+            global_state.is_enabled = shared.opts.data.get("repeat_sampling_enabled", True)
+
+        for k, v in args.items():
+            try:
+                getattr(global_state, k)
+            except AttributeError:
+                continue
+
+            if getattr(getattr(global_state, k), "is_xyz", False):
+                xyz_attr = getattr(global_state, k)
+                xyz_attr.is_xyz = False
+                args[k] = xyz_attr
+                continue
+
+            if shared.state.job_no > 0:
+                continue
+
+            setattr(global_state, k, v)
+
+        apply_and_clear_repeat_override()
+
+
+xyz_grid.patch()
+
+
+def apply_and_clear_repeat_override():
+    locals_here = list(vars(global_state).keys())
+    for x in locals_here:
+        try:
+            override = vars(global_state).get(f"{x}_override")
+            if override is not None:
+                vars(global_state)[x] = override
+                vars(global_state)[f"{x}_override"] = None
+        except:
+            pass
+
+
+class SanityCount:
+    def __init__(
+        self,
+        expectation,
+        init=0,
+    ):
+        self.count = init
+        self.expectation = expectation
+        self.noise = list()
+
+    def __enter__(self):
+        return self
+
+    def __call__(self, val, noise):
+        self.count += val
+        if noise is not None:
+            self.noise.append(noise)
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+        print()
+        print(f"Steps done: {self.count}/{self.expectation}")
+        print("noise: ", self.noise)
+        print()
+
+
+### scripts\repeat_sampling.py file_end ###
+
+### lib_repeat_sampling\global_state.py ###
+
+from typing import List, Optional
+
+
+verbose: bool = True
+is_enabled: bool = False
+is_enabled_override: Optional[bool] = None
+repeat_denoise_strength: float = 0.45
+repeat_denoise_strength_override: Optional[float] = None
+checkbox: bool = False
+checkbox_override: Optional[bool] = None
+repeats: int = 1
+repeats_override: Optional[int] = None
+fixed_seed: str = "False"
+fixed_seed_override: Optional[str] = None
+# fixed_seed: bool = False
+# fixed_seed_override: Optional[bool] = None
+tactic: str = "Equal"
+tactic_override: Optional[str] = None
+factor: float = 1
+factor_override: Optional[float] = None
+sampler_name: str = "Use same sampler"
+sampler_name_override: Optional[str] = None
+
+### lib_repeat_sampling\global_state.py file_end ###
+
+### lib_repeat_sampling\ui.py ###
+
+from lib_repeat_sampling import global_state
+from modules import script_callbacks, shared
+from typing import Dict, Tuple, List, Callable
+import gradio as gr
+import dataclasses
+from modules import sd_samplers
+
+from modules.shared import opts
+import modules.shared as shared
+
+
+@dataclasses.dataclass
+class AccordionInterface:
+    get_elem_id: Callable
+
+    def __post_init__(self):
+        self.is_rendered = False
+
+        self.checkbox = gr.Checkbox(label="Repeat enabled", value=False)
+        self.repeat_denoise_strength = gr.Slider(label="Denoising strength", minimum=0.0, maximum=1.0, value=0.45, step=0.01)
+        self.repeats = gr.Slider(1, 10, 1, label="Repeats", step=1, scale=3)
+        self.fixed_seed = gr.Radio(label="Fix RNG", value="Independent", choices=["False", "Independent", "Same"], scale=1)
+        self.tactic = gr.Radio(["Equal", "Decreasing"], label="Keep the denosing strength equal over several repeats, or decrease it", value="Equal")
+        self.factor = gr.Slider(0, 1, 1, label="Factor decreasing denoising strength", step=0.01, visible=self.tactic.value == "Decreasing")
+        self.sampler_name = gr.Dropdown(
+            label="Sampling method", choices=[x.name for x in sd_samplers.samplers if x.name not in opts.hide_samplers], value="Use same sampler"
+        )
+
+    def arrange_components(self, is_img2img: bool):
+        if self.is_rendered:
+            return
+
+        with gr.Accordion(label="Repeated Sampling", open=False):
+            self.checkbox.render()
+            with gr.Accordion(label="Advanced Settings", open=False):
+                with gr.Row(variant="compact"):
+                    self.sampler_name.render()
+                    self.repeat_denoise_strength.render()
+                with gr.Row(variant="compact"):
+                    self.repeats.render()
+                    self.fixed_seed.render()
+                self.tactic.render()
+                self.factor.render()
+
+    def connect_events(self, is_img2img: bool):
+        if self.is_rendered:
+            return
+
+        def set_tactic(tactic: str, factor: float):
+            if tactic == "Equal":
+                global_state.factor = 1
+                return gr.update(visible=False)
+            else:
+                global_state.factor = factor
+                return gr.update(visible=True)
+
+        self.tactic.change(set_tactic, inputs=[self.tactic, self.factor], outputs=self.factor)
+
+    def set_rendered(self, value: bool = True):
+        self.is_rendered = value
+
+    def get_components(self) -> Tuple[gr.components.Component]:
+        return (self.checkbox, self.sampler_name, self.repeat_denoise_strength, self.repeats, self.fixed_seed, self.tactic, self.factor)
+
+    def get_infotext_fields(self) -> Tuple[Tuple[gr.components.Component, str]]:
+        return tuple(
+            zip(
+                self.get_components(),
+                (
+                    "Enable repeated sampling",
+                    "Repeat Sample denoise_strength",
+                    "How many times to repeat the sampling",
+                    "Do denoising with same RNG-seed, increases detail, danger of burn in effect.",
+                    (
+                        "How the denoising strength should be calculated for multiple repeats"
+                        "Each repeats denoising strength will be lowered by this factor compared to the step before"
+                    ),
+                ),
+            )
+        )
+
+    def get_paste_field_names(self) -> List[str]:
+        return [
+            "Repeat enabled",
+            "Repeat Sample sampler_name",
+            "Repeat Sample denoise_strength",
+            "Repeat Sample repeats",
+            "Repeat Sample fix seed",
+            "Repeat Sample repeat_tactic",
+            "Repeat Sample factor",
+        ]
+
+    def get_extra_generation_params(self, args: Dict) -> Dict:
+        return {
+            "Repeat enabled": args["checkbox"],
+            "Repeat Sample sampler_name": args["sampler_name"],
+            "Repeat Sample denoise_strength": args["repeat_denoise_strength"],
+            "Repeat Sample repeats": args["repeats"],
+            "Repeat Sample fix seed": args["fixed_seed"],
+            "Repeat Sample repeat_tactic": args["tactic"],
+            "Repeat Sample factor": args["factor"],
+        }
+
+    def unpack_processing_args(
+        self,
+        checkbox: bool,
+        sampler_name: str,
+        repeat_denoise_strength: float,
+        repeats: int,
+        fixed_seed: bool,
+        tactic: str,
+        factor: float,
+    ) -> Dict:
+        return {
+            "checkbox": checkbox,
+            "sampler_name": sampler_name,
+            "repeat_denoise_strength": repeat_denoise_strength,
+            "repeats": repeats,
+            "fixed_seed": fixed_seed,
+            "tactic": tactic,
+            "factor": factor,
+        }
+
+
+def on_ui_settings():
+    section = ("repeat_denoise_strength", "Repeat Sampling")
+
+    shared.opts.add_option("repeat_sampling_enabled", shared.OptionInfo(True, "Enable Repeat Sampling extension", section=section))
+    global_state.is_enabled = shared.opts.data.get("repeat_sampling_enabled", True)
+
+    shared.opts.add_option("repeat_sampling_verbose", shared.OptionInfo(False, "Enable verbose debugging for Repeat Sampling", section=section))
+    shared.opts.onchange("repeat_sampling_verbose", update_verbose)
+
+
+script_callbacks.on_ui_settings(on_ui_settings)
+
+
+def update_verbose():
+    global_state.verbose = shared.opts.data.get("repeat_sampling_verbose", False)
+
+
+def on_after_component(component, **_kwargs):
+    if getattr(component, "elem_id", None) == "txt2img_prompt":
+        global txt2img_prompt_textbox
+        txt2img_prompt_textbox = component
+
+    if getattr(component, "elem_id", None) == "img2img_prompt":
+        global img2img_prompt_textbox
+        img2img_prompt_textbox = component
+
+
+script_callbacks.on_after_component(on_after_component)
+
+
+### lib_repeat_sampling\ui.py file_end ###
+
+### lib_repeat_sampling\xyz_grid.py ###
+
+import sys
+from types import ModuleType
+from typing import Optional, Type
+from modules import scripts
+from lib_repeat_sampling import global_state
+from modules import sd_samplers
+from modules.shared import opts
+
+
+def patch():
+    xyz_module = find_xyz_module()
+    if xyz_module is None:
+        print("[repeat sampling]", "xyz_grid.py not found.", file=sys.stderr)
+        return
+
+    xyz_module.axis_options.extend(
+        [
+            xyz_module.AxisOption(
+                "[repeat sampling] Repeat enabled",
+                str,
+                apply_repeat_field("checkbox", bool, translator=lambda bool: bool == "True"),
+                choices=xyz_module.boolean_choice(),
+            ),
+            xyz_module.AxisOption(
+                "[repeat sampling] Fixed seed",
+                str,
+                apply_repeat_field("fixed_seed", str),
+                choices=lambda: ["False", "Independent", "Same"],
+            ),
+            xyz_module.AxisOption(
+                "[repeat sampling] sampler",
+                str,
+                apply_repeat_field("sampler_name", str),
+                choices=lambda: [x.name for x in sd_samplers.samplers if x.name not in opts.hide_samplers],
+            ),
+            xyz_module.AxisOption("[repeat sampling] Repeat Sample denoise_strength", float, apply_repeat_field("repeat_denoise_strength", float)),
+            xyz_module.AxisOption("[repeat sampling] Repeat Sample repeats", int, apply_repeat_field("repeats", int)),
+            xyz_module.AxisOption("[repeat sampling] Repeat Sample repeat_tactic", str, apply_repeat_field("tactic", str)),
+            xyz_module.AxisOption("[repeat sampling] Repeat Sample factor", float, apply_repeat_field("factor", float)),
+        ]
+    )
+
+
+class XyzFloat(float):
+    is_xyz: bool = True
+
+
+def apply_repeat_field(field: str, T: Type, translator=lambda x: x):
+    def callback(_p, v, _vs):
+        try:
+            setattr(global_state, f"{field}_override", T(translator(v)))
+        except:
+            pass
+
+    return callback
+
+
+# def int_or_float(string):
+#     try:
+#         return int(string)
+#     except ValueError:
+#         return float(string)
+
+
+def find_xyz_module() -> Optional[ModuleType]:
+    for data in scripts.scripts_data:
+        if data.script_class.__module__ in {"xyz_grid.py", "xy_grid.py"} and hasattr(data, "module"):
+            return data.module
+
+    return None
+
+
+### lib_repeat_sampling\xyz_grid.py file_end ###
+
