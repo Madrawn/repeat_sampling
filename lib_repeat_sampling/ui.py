@@ -22,9 +22,9 @@ class AccordionInterface:
         self.fixed_seed = gr.Radio(label="Fix RNG", value="Independent", choices=["False", "Independent", "Same"], scale=1)
         self.tactic = gr.Radio(["Equal", "Decreasing"], label="Keep the denosing strength equal over several repeats, or decrease it", value="Equal")
         self.factor = gr.Slider(0, 1, 1, label="Factor decreasing denoising strength", step=0.01, visible=self.tactic.value == "Decreasing")
-        self.sampler_name = gr.Dropdown(
-            label="Sampling method", choices=[x.name for x in sd_samplers.samplers if x.name not in opts.hide_samplers], value="Use same sampler"
-        )
+        self.sampler_name = gr.Dropdown(label="Sampling method",
+                                        choices=["Use same sampler"] + [x.name for x in sd_samplers.samplers if x.name not in opts.hide_samplers],
+                                        value="Use same sampler")
 
     def arrange_components(self, is_img2img: bool):
         if self.is_rendered:
