@@ -40,8 +40,6 @@ To use this script, enable the "Repeat enabled" checkbox and configure the param
 ![Princess Repeat](p1.webp)
 ![Princess Repeat](p2.webp)
 ![Princess Repeat](p3.webp)
-![Princess Repeat](p4.webp)
-![Princess Repeat](p5.webp)
 ![Princess Repeat](exgrid.jpg)
 
 ### Repeat Sampling disabled:
