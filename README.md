@@ -14,6 +14,10 @@ Does not increase the time or steps it takes to generate an image.
   - `False`: Random seeds.
   - `Independent`: Independent but fixed seeds across repeats.
   - `Same`: The same seed used for all repeats.
+- **Fixed Seed Extra Options**: Maintain consistent results across sampling iterations with different seed options:
+  - `Normal`: Nothing special.
+  - `Every other`: For random seeds, changes seed only every second repeat. Else switches between 2 fixed seeds every step.
+  - `Last different`: The same seed used for all repeats, but the last is forced to be different
 - **Sampling Tactic**: Choose between keeping denoising strength 'Equal' across repeats or 'Decreasing' it successively.
   
 ## Usage
@@ -25,11 +29,21 @@ To use this script, enable the "Repeat enabled" checkbox and configure the param
 - `Denoising Strength`: Sets the denoising strength for the sampling process.
 - `Repeats`: Specifies the number of repetitions for the sampling.
 - `Fix RNG`: Sets the random number generation mode for consistent sampling.
+- `Fix RNG Extra`: Sets extra options for random generation.
 - `Sampling Method`: Offers a selection of different sampling techniques from which you can choose.
 
-## Requirements
+## Example Images
+Repeat Sampling disabled:
+![Princess No Repeat](pure.png)
 
-- This script is designed to work with the Stable Diffusion Web UI. Make sure you have a compatible version of the Web UI installed.
+Repeat Sampling enabled:
+![Princess Repeat](exgrid.jpg)
+
+Repeat Sampling disabled:
+![Crystal Ball No Repeat](crystal.png)
+
+Repeat Sampling enabled:
+![Crystal Ball Repeat](crystalgrid.jpg)
 
 ## Installation
 
@@ -41,5 +55,4 @@ If you'd like to contribute to the development of this plugin, please create an 
 ## Acknowledgments
 Neutral prompt for the layout of the extension structure
 
-## (Optional) Example Images
-(Here, insert a few example outputs generated with the script to showcase its capabilities. This would be a good place to add visuals.)
+
