@@ -33,16 +33,23 @@ To use this script, enable the "Repeat enabled" checkbox and configure the param
 - `Sampling Method`: Offers a selection of different sampling techniques from which you can choose.
 
 ## Example Images
-Repeat Sampling disabled:
+##Repeat Sampling disabled:
 ![Princess No Repeat](pure.png)
 
-Repeat Sampling enabled:
+##Repeat Sampling enabled:
+![Princess Repeat](p1.webp)
+![Princess Repeat](p2.webp)
+![Princess Repeat](p3.webp)
+![Princess Repeat](p4.webp)
+![Princess Repeat](p5.webp)
 ![Princess Repeat](exgrid.jpg)
 
-Repeat Sampling disabled:
+##Repeat Sampling disabled:
 ![Crystal Ball No Repeat](crystal.png)
 
-Repeat Sampling enabled:
+##Repeat Sampling enabled:
+![Crystal Ball Repeat](c1.webp)
+![Crystal Ball Repeat](c2.webp)
 ![Crystal Ball Repeat](crystalgrid.jpg)
 
 ## Installation
