@@ -25,7 +25,13 @@ def patch():
                 "[repeat sampling] Fixed seed",
                 str,
                 apply_repeat_field("fixed_seed", str),
-                choices=lambda: ["False", "Independent", "Same"],
+                choices=lambda: global_state.fixed_seed_options,
+            ),
+            xyz_module.AxisOption(
+                "[repeat sampling] Fixed seed extra",
+                str,
+                apply_repeat_field("fixed_seed_extra", str),
+                choices=lambda: global_state.fixed_seed_extra_options,
             ),
             xyz_module.AxisOption(
                 "[repeat sampling] sampler",
@@ -33,9 +39,15 @@ def patch():
                 apply_repeat_field("sampler_name", str),
                 choices=lambda: [x.name for x in sd_samplers.samplers if x.name not in opts.hide_samplers],
             ),
-            xyz_module.AxisOption("[repeat sampling] Repeat Sample denoise_strength", float, apply_repeat_field("repeat_denoise_strength", float)),
+            xyz_module.AxisOption(
+                "[repeat sampling] Repeat Sample denoise_strength",
+                float,
+                apply_repeat_field("repeat_denoise_strength", float),
+            ),
             xyz_module.AxisOption("[repeat sampling] Repeat Sample repeats", int, apply_repeat_field("repeats", int)),
-            xyz_module.AxisOption("[repeat sampling] Repeat Sample repeat_tactic", str, apply_repeat_field("tactic", str)),
+            xyz_module.AxisOption(
+                "[repeat sampling] Repeat Sample repeat_tactic", str, apply_repeat_field("tactic", str)
+            ),
             xyz_module.AxisOption("[repeat sampling] Repeat Sample factor", float, apply_repeat_field("factor", float)),
         ]
     )
