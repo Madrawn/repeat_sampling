@@ -45,6 +45,7 @@ def patch():
                 apply_repeat_field("repeat_denoise_strength", float),
             ),
             xyz_module.AxisOption("[repeat sampling] Repeat Sample repeats", int, apply_repeat_field("repeats", int)),
+            xyz_module.AxisOption("[repeat sampling] Repeat Sample min steps", int, apply_repeat_field("min_step", int)),
             xyz_module.AxisOption(
                 "[repeat sampling] Repeat Sample repeat_tactic", str, apply_repeat_field("tactic", str)
             ),
